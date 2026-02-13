@@ -1,4 +1,3 @@
-# utils/risk_engine.py
 """
 Risk engine for SAFE-INTERN.
 
@@ -22,70 +21,76 @@ AGENT_MAX_SCORES = {
     "company": 30,
     "payment": 30,
     "behavior": 20,
-    "ml": 20
+    "ml": 20,
 }
 
 RISK_CATEGORIES = [
     (30, "Low Risk Indicators"),
     (60, "Caution Advised"),
-    (100, "High Risk Indicators")
+    (100, "High Risk Indicators"),
 ]
 
-# These rules MUST match actual agent observations
+
+# ---------- NORMALIZED RULES ----------
+
 COMPANY_RULES = {
     "not reachable": 10,
     "does not use https": 5,
     "free email domain": 10,
-    "does not match website domain": 5
+    "email domain does not match": 5,
 }
 
 PAYMENT_RULES = {
-    "payment appears to be requested before": 15,
-    "specific payment amount": 10,
-    "high-pressure language": 5
+    "payment appears to be requested before": 20,
+    "specific payment amount": 15,
+    "payment mentioned": 8,
 }
 
 BEHAVIOR_RULES = {
-    "urgency_terms": 10,
-    "manipulation_terms": 10
-}
-
-ML_SCORES = {
-    "low": 5,
-    "medium": 12,
-    "high": 20
+    "urgency_terms": 15,
+    "manipulation_terms": 20,
 }
 
 
-# ---------- SCORING FUNCTIONS ----------
+# ---------- HELPERS ----------
+
+def _normalize(text: str) -> str:
+    return text.lower().strip()
+
+
+# ---------- COMPANY ----------
 
 def score_company(result: Dict[str, Any]) -> Tuple[int, List[str]]:
     score = 0
     reasons = []
 
     for obs in result.get("observations", []):
-        obs_lower = obs.lower()
+        obs_norm = _normalize(obs)
         for rule, points in COMPANY_RULES.items():
-            if rule in obs_lower:
+            if rule in obs_norm:
                 score += points
                 reasons.append(f"{rule} (+{points})")
 
     return min(score, AGENT_MAX_SCORES["company"]), reasons
 
 
+# ---------- PAYMENT ----------
+
 def score_payment(result: Dict[str, Any]) -> Tuple[int, List[str]]:
     score = 0
     reasons = []
 
     for obs in result.get("observations", []):
-        obs_lower = obs.lower()
+        obs_norm = _normalize(obs)
         for rule, points in PAYMENT_RULES.items():
-            if rule in obs_lower:
+            if rule in obs_norm:
                 score += points
                 reasons.append(f"{rule} (+{points})")
 
     return min(score, AGENT_MAX_SCORES["payment"]), reasons
 
+
+# ---------- BEHAVIOR ----------
 
 def score_behavior(result: Dict[str, Any]) -> Tuple[int, List[str]]:
     score = 0
@@ -97,45 +102,42 @@ def score_behavior(result: Dict[str, Any]) -> Tuple[int, List[str]]:
 
     if result.get("manipulation_terms"):
         score += BEHAVIOR_RULES["manipulation_terms"]
-        reasons.append("manipulation phrases detected")
+        reasons.append("manipulative phrasing detected")
+
+    # Infer missing process from observation text
+    obs_text = " ".join(result.get("observations", [])).lower()
+    if "no clear interview" in obs_text:
+        score += 10
+        reasons.append("no interview or selection process mentioned")
 
     return min(score, AGENT_MAX_SCORES["behavior"]), reasons
 
 
-def score_ml(ml_result: Dict[str, Any]) -> Tuple[int, List[str]]:
-    """
-    Score ML signal using probability and confidence.
+# ---------- ML ----------
 
-    ML is advisory and capped.
-    """
+def score_ml(ml_result: Dict[str, Any]) -> Tuple[int, List[str]]:
     if not ml_result or not ml_result.get("ml_used"):
         return 0, ["ML analysis not performed"]
 
     risk_level = ml_result.get("risk_level", "low")
     probability = ml_result.get("risk_probability", 0.0)
 
-    # Base score by level
-    base_scores = {
-        "low": 5,
-        "medium": 12,
-        "high": 20
-    }
-
+    base_scores = {"low": 5, "medium": 12, "high": 20}
     base = base_scores.get(risk_level, 0)
 
-    # Confidence = distance from 0.5
-    confidence = abs(probability - 0.5) * 2  # range 0–1
+    confidence = abs(probability - 0.5) * 2  # 0–1
+    raw_score = base * confidence
 
-    # Final ML score
-    score = int(round(base * confidence))
-    score = min(score, AGENT_MAX_SCORES["ml"])
+    # Ignore weak ML noise
+    if raw_score < 3:
+        return 0, ["ML signal too weak to influence score"]
 
-    explanation = [
-        f"ML language analysis indicates {risk_level} risk "
-        f"(probability: {probability}, confidence: {round(confidence, 2)}) (+{score})"
+    score = min(int(round(raw_score)), AGENT_MAX_SCORES["ml"])
+
+    return score, [
+        f"ML language patterns indicate {risk_level} risk "
+        f"(confidence={round(confidence, 2)}) (+{score})"
     ]
-
-    return score, explanation
 
 
 # ---------- CATEGORY ----------
@@ -150,45 +152,39 @@ def get_risk_category(score: int) -> str:
 # ---------- MAIN ENGINE ----------
 
 def calculate_risk(agent_results: Dict[str, Any]) -> Dict[str, Any]:
-    breakdown = {}
-    details = {}
+    breakdown: Dict[str, int] = {}
+    details: Dict[str, List[str]] = {}
     total = 0
 
-    if agent_results.get("company"):
-        s, d = score_company(agent_results["company"])
-        breakdown["company"] = s
-        details["company"] = d
-        total += s
-    else:
-        breakdown["company"] = 0
-        details["company"] = ["not analyzed"]
+    for agent, scorer in [
+        ("company", score_company),
+        ("payment", score_payment),
+        ("behavior", score_behavior),
+        ("ml", score_ml),
+    ]:
+        if agent in agent_results:
+            s, d = scorer(agent_results[agent])
+        else:
+            s, d = 0, ["not analyzed"]
 
-    if agent_results.get("payment"):
-        s, d = score_payment(agent_results["payment"])
-        breakdown["payment"] = s
-        details["payment"] = d
+        breakdown[agent] = s
+        details[agent] = d
         total += s
-    else:
-        breakdown["payment"] = 0
-        details["payment"] = ["not analyzed"]
 
-    if agent_results.get("behavior"):
-        s, d = score_behavior(agent_results["behavior"])
-        breakdown["behavior"] = s
-        details["behavior"] = d
-        total += s
-    else:
-        breakdown["behavior"] = 0
-        details["behavior"] = ["not analyzed"]
+    # ---------- COMPOUND RISK ESCALATION ----------
+    strong_signals = 0
 
-    if agent_results.get("ml"):
-        s, d = score_ml(agent_results["ml"])
-        breakdown["ml"] = s
-        details["ml"] = d
-        total += s
-    else:
-        breakdown["ml"] = 0
-        details["ml"] = ["not analyzed"]
+    if breakdown.get("payment", 0) >= 15:
+        strong_signals += 1
+
+    if breakdown.get("behavior", 0) >= 20:
+        strong_signals += 1
+
+    if breakdown.get("ml", 0) >= 10:
+        strong_signals += 1
+
+    if strong_signals >= 2:
+        total += 15  # escalation bonus
 
     total = min(total, 100)
 
@@ -196,5 +192,5 @@ def calculate_risk(agent_results: Dict[str, Any]) -> Dict[str, Any]:
         "risk_score": total,
         "risk_category": get_risk_category(total),
         "breakdown": breakdown,
-        "details": details
+        "details": details,
     }

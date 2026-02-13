@@ -29,12 +29,12 @@ ML_VECTORIZER_PATH = "ml/vectorizer.pkl"
 # ---------- DATABASE ----------
 DATABASE_PATH = "database/safe_intern.db"
 
-# ---------- LLM SETTINGS (CREWAI + OPENROUTER) ----------
+# ---------- LLM SETTINGS (GOOGLE GEMINI) ----------
 LLM_ENABLED = True
-LLM_PROVIDER = "openrouter"
-LLM_MODEL_NAME = "mistralai/mistral-7b-instruct"
+LLM_PROVIDER = "gemini"
+LLM_MODEL_NAME = "gemini-2.0-flash"
 LLM_TEMPERATURE = 0.0
-LLM_MAX_TOKENS = 512
+LLM_MAX_TOKENS = 1024
 LLM_TIMEOUT = 15
 LLM_JSON_ONLY = True
 

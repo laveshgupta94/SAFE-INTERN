@@ -64,7 +64,7 @@ def sanitize_text(text: str) -> str:
 
 
 def _replace_case_insensitive(text: str, target: str, replacement: str) -> str:
-    pattern = re.compile(re.escape(target), re.IGNORECASE)
+    pattern = re.compile(r'\b' + re.escape(target) + r'\b', re.IGNORECASE)
     return pattern.sub(replacement, text)
 
 

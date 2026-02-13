@@ -25,3 +25,6 @@ beautifulsoup4
 
 # --- Utilities ---
 tqdm
+
+# --- Gemini API ---
+google-generativeai

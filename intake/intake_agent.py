@@ -1,4 +1,3 @@
-# intake/intake_agent.py
 """
 Intake agent for SAFE-INTERN.
 
@@ -27,7 +26,9 @@ from config.settings import (
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 
-# ---------- FALLBACK (SAFE MODE) ----------
+# ------------------------------------------------------------------
+# FALLBACK (DETERMINISTIC & SAFE)
+# ------------------------------------------------------------------
 
 def fallback_structuring(text: str) -> Dict[str, Any]:
     email_match = re.search(
@@ -41,6 +42,7 @@ def fallback_structuring(text: str) -> Dict[str, Any]:
     return {
         "clean_text": text,
 
+        # Company / contact
         "company_name": None,
         "contact_person": None,
         "email": email_match.group(0) if email_match else None,
@@ -48,6 +50,7 @@ def fallback_structuring(text: str) -> Dict[str, Any]:
         "website": url_match.group(0) if url_match else None,
         "social_media": [],
 
+        # Job info
         "job_title": None,
         "job_description": None,
         "location": None,
@@ -55,6 +58,7 @@ def fallback_structuring(text: str) -> Dict[str, Any]:
         "compensation": None,
         "start_date": None,
 
+        # Indicators
         "payment_mentions": any(k in text.lower() for k in payment_keywords),
         "payment_required": False,
         "payment_amount": None,
@@ -65,75 +69,75 @@ def fallback_structuring(text: str) -> Dict[str, Any]:
         "interview_process_described": False,
         "communication_channels": [],
 
+        # Analysis helpers
         "missing_information": [],
         "unusual_patterns": {},
         "entities": {},
 
+        # Metadata
         "input_length": len(text),
         "language_detected": None,
     }
 
 
-# ---------- OPENROUTER LLM ----------
+# ------------------------------------------------------------------
+# GOOGLE GEMINI LLM
+# ------------------------------------------------------------------
+
+import google.generativeai as genai
 
 def run_llm_intake(text: str) -> Dict[str, Any]:
-    api_key = os.getenv("OPENROUTER_API_KEY")
-
+    api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
-        raise RuntimeError("OPENROUTER_API_KEY not set")
+        raise RuntimeError("GEMINI_API_KEY not set")
+
+    genai.configure(api_key=api_key)
+    model = genai.GenerativeModel(LLM_MODEL_NAME)
 
     system_prompt = """
-You are an intake parser for an internship safety system.
+    You are an intake parser for an internship safety system.
 
-Rules:
-- Output ONLY valid JSON
-- Do NOT add explanations
-- Do NOT accuse or judge
-- Use null when information is missing
+    Rules:
+    - Output ONLY valid JSON
+    - No explanations
+    - No accusations or judgments
+    - Use null when information is missing
 
-Return JSON matching this structure:
+    Required keys:
+    clean_text, company_name, email, website,
+    payment_mentions, payment_required,
+    urgency_mentions, input_length
+    """
 
-{
-  "clean_text": string,
-  "company_name": string | null,
-  "email": string | null,
-  "website": string | null,
-  "payment_mentions": boolean,
-  "payment_required": boolean,
-  "urgency_mentions": boolean,
-  "input_length": number
-}
-"""
+    prompt = f"{system_prompt}\n\nInput Text:\n{text}\n\nOutput JSON:"
 
-    payload = {
-        "model": LLM_MODEL_NAME,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": text}
-        ],
-        "temperature": LLM_TEMPERATURE,
-        "max_tokens": LLM_MAX_TOKENS
-    }
+    try:
+        response = model.generate_content(prompt)
+        content = response.text
+        
+        # Clean markdown code blocks if present
+        if "```json" in content:
+            content = content.split("```json")[1].split("```")[0]
+        elif "```" in content:
+            content = content.split("```")[1].split("```")[0]
+            
+        raw = json.loads(content)
+        # print(f"DEBUG: Gemini Parsed JSON: {raw}")
 
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json"
-    }
+        # 🔐 NORMALIZE to schema-compatible dict
+        base = fallback_structuring(text)
+        base.update({k: raw.get(k) for k in raw if k in base})
+        
+        return base
 
-    response = requests.post(
-        OPENROUTER_API_URL,
-        headers=headers,
-        json=payload,
-        timeout=15
-    )
-
-    response.raise_for_status()
-    content = response.json()["choices"][0]["message"]["content"]
-
-    return json.loads(content)
+    except Exception as e:
+        # print(f"DEBUG: Gemini Error: {e}")
+        raise e
 
 
-# ---------- MAIN ENTRY ----------
+# ------------------------------------------------------------------
+# MAIN ENTRY
+# ------------------------------------------------------------------
 
 def run_intake(text: str) -> IntakeSchema:
     if not text or not text.strip():
@@ -144,7 +148,8 @@ def run_intake(text: str) -> IntakeSchema:
     else:
         try:
             structured = run_llm_intake(text)
-        except Exception:
+        except Exception as e:
+            print(f"DEBUG: Intake Exception: {e}")
             structured = fallback_structuring(text)
 
     return build_intake_schema(structured)
